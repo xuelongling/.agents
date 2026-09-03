@@ -1,0 +1,24 @@
+{
+  "schema_version": "1",
+  "instructions": [
+    "AGENTS.md",
+    "CONTEXT-MAP.md"
+  ],
+  "contexts": [
+    "CONTEXT.md"
+  ],
+  "skills": [
+    {
+      "id": "workspace-issues",
+      "source": "skills/workspace-issues/SKILL.md"
+    }
+  ],
+  "configuration_templates": [
+    "codex/config.toml"
+  ],
+  "hooks": [
+    "codex/hooks.json"
+  ],
+  "mcp_registry": "mcp/registry.json",
+  "plugin_registry": "plugins/registry.json"
+}
