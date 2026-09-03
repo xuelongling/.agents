@@ -19,6 +19,23 @@
   "hooks": [
     "codex/hooks.json"
   ],
+  "support_documents": [
+    "README.md",
+    "docs/adr/0005-version-agent-infrastructure-separately-from-activation.md",
+    "docs/agents/domain.md",
+    "docs/agents/issue-tracker.md",
+    "docs/agents/triage-labels.md"
+  ],
+  "tests": [
+    "tests/agent-infra.test.ts"
+  ],
+  "tooling": [
+    "tools/agent-infra.ts",
+    "tools/repository-policy.ts",
+    "package.json",
+    "pnpm-lock.yaml",
+    "tsconfig.json"
+  ],
   "mcp_registry": "mcp/registry.json",
   "plugin_registry": "plugins/registry.json"
 }

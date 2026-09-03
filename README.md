@@ -19,4 +19,4 @@ The individual public checks are `format:check`, `typecheck`, `test`, `secret:sc
 
 `agent-assets.json` inventories maintained workspace assets. The MCP and plugin registries are intentionally empty until a real workspace capability is approved. Machine authentication, personal plugin selection, OAuth sessions, and other user state remain outside this repository.
 
-Generated MCP output may be checked in only when its MCP project contains `artifact-provenance.json`. Every output must name at least one maintainable file under that project's `src/` and at least one existing authoritative lock file. Repository validation rejects undeclared generated output, missing provenance inputs, caches, and logs.
+Generated agent or MCP output may be checked in only when its project contains `artifact-provenance.json`. Every output must record its SHA-256 and name at least one hashed maintainable file under that project's `src/` plus at least one hashed authoritative ecosystem lock. Repository validation rejects undeclared or drifted generated output, missing provenance inputs, caches, and logs.

@@ -20,4 +20,4 @@ Local tickets use the default Matt Pocock triage vocabulary. See `.agents/docs/a
 
 ### Domain docs
 
-This is a multi-context workspace: `.agents/CONTEXT-MAP.md` points to each repository's domain glossary, while workspace-wide ADRs live under `.agents/docs/adr/`. See `.agents/docs/agents/domain.md`.
+This is a multi-context workspace: `.agents/CONTEXT-MAP.md` points to each repository's domain glossary. Pure agent-runtime ADRs live under `.agents/docs/adr/`; product, build, contract, and integration ADRs remain in their owning repository. See `.agents/docs/agents/domain.md`.

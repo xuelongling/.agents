@@ -13,7 +13,7 @@
     "source:check": "node tools/agent-infra.ts source-integrity",
     "test": "node --test tests/*.test.ts",
     "typecheck": "tsc --noEmit",
-    "verify": "pnpm format:check && pnpm typecheck && pnpm test && pnpm secret:scan && pnpm source:check"
+    "verify": "node tools/agent-infra.ts format && tsc --noEmit && node --test tests/*.test.ts && node tools/agent-infra.ts secret-scan && node tools/agent-infra.ts source-integrity"
   },
   "devDependencies": {
     "@types/node": "24.3.0",
