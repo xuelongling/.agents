@@ -2,7 +2,7 @@
 
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { lstat, readFile, readdir, stat } from "node:fs/promises";
+import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
@@ -157,10 +157,10 @@ function credentialPattern(): RegExp {
 }
 
 function secretContentCategory(content: string): string | undefined {
-  const knownToken = /(?:sk|gh[oprsu])-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}/;
+  const knownToken = /sk-[A-Za-z0-9_-]{16,}|gh[oprsu]_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}/;
   const privateKey = /-----BEGIN (?:RSA |EC |OPENSSH )?PRIVATE KEY-----/;
   const windowsAbsolute = new RegExp(
-    String.raw`(?:^|[\s"'(=])(?:[A-Za-z]:[\\/]|\\\\[A-Za-z0-9._-]+\\[A-Za-z0-9$._-]+\\)`,
+    String.raw`(?:^|[^A-Za-z0-9_])(?:[A-Za-z]:[\\/]|\\\\[A-Za-z0-9._-]+\\[A-Za-z0-9$._-]+\\)`,
     "im",
   );
   const posixHome = new RegExp(String.raw`/(?:home|Users)/[^/\s"']+`);
@@ -186,6 +186,10 @@ async function scanSecrets(root: string, entries: RepositoryEntries): Promise<Fi
   }));
   for (const absolutePath of entries.files) {
     const relativePath = relativePortable(root, absolutePath);
+    if (!(await pathIsOwnedFile(root, absolutePath, entries))) {
+      findings.push({ category: "file path crosses a symlink", relativePath });
+      continue;
+    }
     if (isAuthenticationStateName(path.basename(absolutePath).toLowerCase())) {
       findings.push({ category: "authentication state", relativePath });
       continue;
@@ -205,9 +209,33 @@ async function scanSecrets(root: string, entries: RepositoryEntries): Promise<Fi
   return findings;
 }
 
-async function pathIsFile(filePath: string): Promise<boolean> {
+function touchesKnownSymlink(root: string, filePath: string, entries: RepositoryEntries): boolean {
+  const relativePath = relativePortable(root, filePath);
+  return entries.symlinks.some((symlinkPath) => {
+    const relativeSymlink = relativePortable(root, symlinkPath);
+    return relativePath === relativeSymlink || relativePath.startsWith(`${relativeSymlink}/`);
+  });
+}
+
+async function pathIsOwnedFile(root: string, filePath: string, entries: RepositoryEntries): Promise<boolean> {
+  if (!isInside(root, filePath) || touchesKnownSymlink(root, filePath, entries)) {
+    return false;
+  }
   try {
-    return (await stat(filePath)).isFile();
+    const relativeParts = path.relative(root, filePath).split(path.sep);
+    let currentPath = root;
+    for (const [index, part] of relativeParts.entries()) {
+      currentPath = path.join(currentPath, part);
+      const metadata = await lstat(currentPath);
+      if (metadata.isSymbolicLink()) {
+        return false;
+      }
+      const isLast = index === relativeParts.length - 1;
+      if ((isLast && !metadata.isFile()) || (!isLast && !metadata.isDirectory())) {
+        return false;
+      }
+    }
+    return true;
   } catch {
     return false;
   }
@@ -239,12 +267,14 @@ function validProvenanceInput(value: unknown): value is ProvenanceInput {
 }
 
 async function verifyDigest(
+  root: string,
+  entries: RepositoryEntries,
   expected: string,
   absolutePath: string,
   relativePath: string,
   missingCategory: string,
 ): Promise<Finding[]> {
-  if (!(await pathIsFile(absolutePath))) {
+  if (!(await pathIsOwnedFile(root, absolutePath, entries))) {
     return [{ category: missingCategory, relativePath }];
   }
   if (!/^sha256:[0-9a-f]{64}$/.test(expected) || (await sha256File(absolutePath)) !== expected) {
@@ -257,12 +287,13 @@ async function checkArtifactProject(
   root: string,
   project: string,
   generatedFiles: readonly string[],
+  entries: RepositoryEntries,
 ): Promise<Finding[]> {
   const findings: Finding[] = [];
   const projectRoot = path.resolve(root, project);
   const provenancePath = path.join(projectRoot, "artifact-provenance.json");
   const provenanceRelativePath = relativePortable(root, provenancePath);
-  if (!(await pathIsFile(provenancePath))) {
+  if (!(await pathIsOwnedFile(root, provenancePath, entries))) {
     return generatedFiles.map((relativePath) => ({ category: generatedOutputCategory(project), relativePath }));
   }
 
@@ -302,7 +333,9 @@ async function checkArtifactProject(
       findings.push({ category: "duplicate generated artifact declaration", relativePath: outputRelativePath });
     }
     declaredOutputs.add(outputRelativePath);
-    findings.push(...(await verifyDigest(artifact.digest, outputPath, outputRelativePath, "missing generated artifact")));
+    findings.push(
+      ...(await verifyDigest(root, entries, artifact.digest, outputPath, outputRelativePath, "missing generated artifact")),
+    );
 
     const sourceRoot = path.join(projectRoot, "src");
     for (const source of artifact.sources) {
@@ -311,7 +344,7 @@ async function checkArtifactProject(
       if (!isInside(sourceRoot, sourcePath)) {
         findings.push({ category: "invalid maintainable source path", relativePath: source.path });
       } else {
-        findings.push(...(await verifyDigest(source.digest, sourcePath, sourceRelativePath, "missing source")));
+        findings.push(...(await verifyDigest(root, entries, source.digest, sourcePath, sourceRelativePath, "missing source")));
       }
     }
 
@@ -321,7 +354,7 @@ async function checkArtifactProject(
       if (!isInside(projectRoot, lockPath) || !authoritativeLockNames.has(path.basename(lockPath))) {
         findings.push({ category: "invalid authoritative lock", relativePath: lock.path });
       } else {
-        findings.push(...(await verifyDigest(lock.digest, lockPath, lockRelativePath, "missing lock")));
+        findings.push(...(await verifyDigest(root, entries, lock.digest, lockPath, lockRelativePath, "missing lock")));
       }
     }
   }
@@ -334,8 +367,15 @@ async function checkArtifactProject(
   return findings;
 }
 
-async function readJsonObject(filePath: string): Promise<Record<string, unknown> | undefined> {
+async function readJsonObject(
+  root: string,
+  filePath: string,
+  entries: RepositoryEntries,
+): Promise<Record<string, unknown> | undefined> {
   try {
+    if (!(await pathIsOwnedFile(root, filePath, entries))) {
+      return undefined;
+    }
     const value: unknown = JSON.parse(await readFile(filePath, "utf8"));
     return typeof value === "object" && value !== null && !Array.isArray(value)
       ? (value as Record<string, unknown>)
@@ -351,10 +391,10 @@ function stringArray(value: unknown): readonly string[] | undefined {
 
 async function checkAgentAssetInventory(root: string, entries: RepositoryEntries): Promise<Finding[]> {
   const inventoryPath = path.join(root, "agent-assets.json");
-  if (!(await pathIsFile(inventoryPath))) {
+  if (!(await pathIsOwnedFile(root, inventoryPath, entries))) {
     return [{ category: "missing agent asset inventory", relativePath: "agent-assets.json" }];
   }
-  const parsed = await readJsonObject(inventoryPath);
+  const parsed = await readJsonObject(root, inventoryPath, entries);
   if (parsed === undefined || parsed.schema_version !== "1") {
     return [{ category: "invalid agent asset inventory", relativePath: "agent-assets.json" }];
   }
@@ -383,7 +423,7 @@ async function checkAgentAssetInventory(root: string, entries: RepositoryEntries
       const absolutePath = path.resolve(root, declaredPath);
       if (!isInside(root, absolutePath)) {
         findings.push({ category: "inventoried asset escapes repository", relativePath: declaredPath });
-      } else if (!(await pathIsFile(absolutePath))) {
+      } else if (!(await pathIsOwnedFile(root, absolutePath, entries))) {
         findings.push({ category: "missing inventoried asset", relativePath: declaredPath });
       }
     }
@@ -399,7 +439,7 @@ async function checkAgentAssetInventory(root: string, entries: RepositoryEntries
       }
       declaredAssets.add(skill.source.replaceAll("\\", "/"));
       const sourcePath = path.resolve(root, skill.source);
-      if (!isInside(root, sourcePath) || !(await pathIsFile(sourcePath))) {
+      if (!isInside(root, sourcePath) || !(await pathIsOwnedFile(root, sourcePath, entries))) {
         findings.push({ category: "missing inventoried asset", relativePath: skill.source });
         continue;
       }
@@ -411,19 +451,19 @@ async function checkAgentAssetInventory(root: string, entries: RepositoryEntries
   }
 
   for (const hooksPath of stringArray(inventory.hooks) ?? []) {
-    const hooks = await readJsonObject(path.resolve(root, hooksPath));
+    const hooks = await readJsonObject(root, path.resolve(root, hooksPath), entries);
     if (hooks === undefined || typeof hooks.hooks !== "object" || hooks.hooks === null || Array.isArray(hooks.hooks)) {
       findings.push({ category: "invalid hooks configuration", relativePath: hooksPath });
     }
   }
   if (typeof inventory.mcp_registry === "string") {
-    const registry = await readJsonObject(path.resolve(root, inventory.mcp_registry));
+    const registry = await readJsonObject(root, path.resolve(root, inventory.mcp_registry), entries);
     if (registry === undefined || registry.schema_version !== "1" || !Array.isArray(registry.servers)) {
       findings.push({ category: "invalid MCP registry", relativePath: inventory.mcp_registry });
     }
   }
   if (typeof inventory.plugin_registry === "string") {
-    const registry = await readJsonObject(path.resolve(root, inventory.plugin_registry));
+    const registry = await readJsonObject(root, path.resolve(root, inventory.plugin_registry), entries);
     if (registry === undefined || registry.schema_version !== "1" || !Array.isArray(registry.plugins)) {
       findings.push({ category: "invalid plugin registry", relativePath: inventory.plugin_registry });
     }
@@ -447,6 +487,7 @@ async function checkAgentAssetInventory(root: string, entries: RepositoryEntries
 function stateFinding(relativePath: string): Finding | undefined {
   const lowerPath = relativePath.toLowerCase();
   const segments = lowerPath.split("/");
+  const basename = segments.at(-1) ?? "";
   if (segments.includes("node_modules")) {
     return { category: "dependency cache is repository-local state", relativePath };
   }
@@ -456,14 +497,24 @@ function stateFinding(relativePath: string): Finding | undefined {
   if (segments.some((segment) => [".cache", "cache", "caches"].includes(segment))) {
     return { category: "cache is repository-local state", relativePath };
   }
+  if (/(?:^|[-_.])cache(?:[-_.]|$)/.test(basename)) {
+    return { category: "cache is repository-local state", relativePath };
+  }
   if (segments.includes("logs") || lowerPath.endsWith(".log")) {
     return { category: "log is repository-local state", relativePath };
   }
   if (/\.(?:db|sqlite|sqlite3|wal)$/.test(lowerPath)) {
     return { category: "state database is repository-local state", relativePath };
   }
-  if (lowerPath.endsWith(".jsonl") && segments.some((segment) => ["events", "history", "sessions"].includes(segment))) {
+  if (
+    lowerPath.endsWith(".jsonl") &&
+    (segments.some((segment) => ["events", "history", "sessions"].includes(segment)) ||
+      /^(?:events|history|sessions)(?:[-_.].*)?\.jsonl$/.test(basename))
+  ) {
     return { category: "history or session log is repository-local state", relativePath };
+  }
+  if (basename === ".codex-global-state.json") {
+    return { category: "agent state is repository-local state", relativePath };
   }
   return undefined;
 }
@@ -495,7 +546,7 @@ async function checkSourceIntegrity(root: string, entries: RepositoryEntries): P
     }
   }
   for (const [project, generatedFiles] of generatedByProject) {
-    findings.push(...(await checkArtifactProject(root, project, generatedFiles)));
+    findings.push(...(await checkArtifactProject(root, project, generatedFiles, entries)));
   }
   findings.push(...(await checkAgentAssetInventory(root, entries)));
   return findings;
@@ -506,6 +557,10 @@ async function checkFormat(root: string, entries: RepositoryEntries): Promise<Fi
   const decoder = new TextDecoder("utf-8", { fatal: true });
   for (const absolutePath of entries.files) {
     const relativePath = relativePortable(root, absolutePath);
+    if (!(await pathIsOwnedFile(root, absolutePath, entries))) {
+      findings.push({ category: "file path crosses a symlink", relativePath });
+      continue;
+    }
     if (binaryExtensions.has(path.extname(absolutePath).toLowerCase())) {
       continue;
     }
@@ -525,7 +580,10 @@ async function checkFormat(root: string, entries: RepositoryEntries): Promise<Fi
       findings.push({ category: "text contains a UTF-8 BOM", relativePath });
     }
     const windowsCommand = absolutePath.toLowerCase().endsWith(".cmd") || absolutePath.toLowerCase().endsWith(".bat");
-    const invalidCarriageReturn = windowsCommand ? content.replaceAll("\r\n", "").includes("\r") : content.includes("\r");
+    const remainingLineEndings = windowsCommand ? content.replaceAll("\r\n", "") : content;
+    const invalidCarriageReturn = windowsCommand
+      ? remainingLineEndings.includes("\r") || remainingLineEndings.includes("\n")
+      : content.includes("\r");
     if (invalidCarriageReturn) {
       findings.push({ category: "text uses a non-LF line ending", relativePath });
     }

@@ -116,6 +116,16 @@ test("secret scan rejects credential values", async () => {
   });
 });
 
+test("secret scan rejects GitHub tokens without an assignment key", async () => {
+  const oauthToken = ["gho", "A".repeat(36)].join("_");
+  const fineGrainedToken = ["github", "pat", "B".repeat(40)].join("_");
+  await withFixture({ "notes/tokens.md": `${oauthToken}\n${fineGrainedToken}\n` }, (root) => {
+    const result = runCli("secret-scan", root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /credential value/i);
+  });
+});
+
 test("secret scan rejects personal absolute paths", async () => {
   const personalPath = ["C:", "Users", "maintainer", "agent.log"].join("\\");
   await withFixture({ "codex/config.toml": `notes = "${personalPath}"\n` }, (root) => {
@@ -128,6 +138,15 @@ test("secret scan rejects personal absolute paths", async () => {
 test("secret scan rejects drive-rooted personal paths outside a user profile", async () => {
   const personalPath = ["E:", "workspaces", "private", "notes.md"].join("\\");
   await withFixture({ "docs/local.md": `location = "${personalPath}"\n` }, (root) => {
+    const result = runCli("secret-scan", root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /personal absolute path/i);
+  });
+});
+
+test("secret scan rejects a Markdown-code Windows absolute path", async () => {
+  const personalPath = ["E:", "workspaces", "private", "notes.md"].join("\\");
+  await withFixture({ "docs/local.md": `location: \`${personalPath}\`\n` }, (root) => {
     const result = runCli("secret-scan", root);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /personal absolute path/i);
@@ -379,6 +398,24 @@ test("source integrity rejects tracked dependency caches and agent state databas
   );
 });
 
+test("source integrity rejects Codex cache and root history state names", async () => {
+  await withFixture(
+    {
+      ...inventoryFixture(),
+      "history.jsonl": "{}\n",
+      "models_cache.json": "{}\n",
+      ".codex-global-state.json": "{}\n",
+    },
+    (root) => {
+      const result = runCli("source-integrity", root);
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /history or session log/i);
+      assert.match(result.stderr, /cache/i);
+      assert.match(result.stderr, /agent state/i);
+    },
+  );
+});
+
 test("source integrity rejects a tracked symlink before reading its target", async () => {
   await withFixture(inventoryFixture(), (root) => {
     assert.equal(spawnSync("git", ["init", "--quiet"], { cwd: root }).status, 0);
@@ -397,6 +434,37 @@ test("source integrity rejects a tracked symlink before reading its target", asy
     const result = runCli("source-integrity", root);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /symlink/i);
+  });
+});
+
+test("source integrity never validates an inventoried skill through an indexed symlink", async () => {
+  const fixture = inventoryFixture();
+  const inventory = JSON.parse(fixture["agent-assets.json"] ?? "") as Record<string, unknown>;
+  inventory.skills = [{ id: "linked-skill", source: "skills/linked/SKILL.md" }];
+  fixture["agent-assets.json"] = `${JSON.stringify(inventory, null, 2)}\n`;
+  fixture["skills/linked/SKILL.md"] = "---\nname: linked-skill\ndescription: Linked test skill.\n---\n";
+
+  await withFixture(fixture, (root) => {
+    assert.equal(spawnSync("git", ["init", "--quiet"], { cwd: root }).status, 0);
+    assert.equal(spawnSync("git", ["add", "."], { cwd: root }).status, 0);
+    const blob = spawnSync("git", ["hash-object", "-w", "--stdin"], {
+      cwd: root,
+      encoding: "utf8",
+      input: "../../outside-private-skill",
+    });
+    assert.equal(blob.status, 0, blob.stderr);
+    assert.equal(
+      spawnSync(
+        "git",
+        ["update-index", "--add", "--cacheinfo", `120000,${blob.stdout.trim()},skills/linked/SKILL.md`],
+        { cwd: root },
+      ).status,
+      0,
+    );
+    const result = runCli("source-integrity", root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /symlink/i);
+    assert.match(result.stderr, /missing inventoried asset/i);
   });
 });
 
@@ -473,6 +541,14 @@ test("format check accepts CRLF only for Windows command scripts", async () => {
   await withFixture({ "scripts/verify.cmd": "@echo off\r\n", "scripts/verify.bat": "@echo off\r\n" }, (root) => {
     const result = runCli("format", root);
     assert.equal(result.status, 0, result.stderr);
+  });
+});
+
+test("format check rejects LF-only Windows command scripts", async () => {
+  await withFixture({ "scripts/verify.cmd": "@echo off\n" }, (root) => {
+    const result = runCli("format", root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /line ending/i);
   });
 });
 
