@@ -421,7 +421,9 @@ test("repository PR workflow exposes distinct policy, activation, secret, test, 
   }
   assert.match(contents, /repo\.py init/);
   assert.match(contents, /repo\.py sync --verify/);
-  assert.match(contents, /tsfg-build\.mjs verify-workspace/);
+  assert.match(contents, /eng\/tsfg-build verify-workspace/);
+  assert.match(contents, /eng\\tsfg-build\.cmd verify-workspace/);
+  assert.doesNotMatch(contents, /tsfg-build\.mjs verify-workspace/);
   const result = runCli("workflow-policy", repositoryRoot);
   assert.equal(result.status, 0, result.stderr);
 });

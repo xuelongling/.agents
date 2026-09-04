@@ -120,7 +120,13 @@ jobs:
         shell: bash
         run: |
           overlay_revision=$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('.ci/activation-overlay.json','utf8')).manifestRevision)")
-          node .ci/workspace/tsfg/eng/tsfg-build.mjs verify-workspace --workspace "$GITHUB_WORKSPACE/.ci/workspace" --manifest-url "$TSFG_MANIFEST_URL" --manifest-revision "$overlay_revision" --manifest bootstrap/r00.xml --report "$GITHUB_WORKSPACE/.ci/activation-linux-report.json"
+          bootstrap_node=$(command -v node)
+          bootstrap_node_sha256=$(sha256sum "$bootstrap_node" | cut -d ' ' -f 1)
+          export TSFG_BOOTSTRAP_NODE="$bootstrap_node"
+          export TSFG_BOOTSTRAP_NODE_SHA256="$bootstrap_node_sha256"
+          export TSFG_CACHE_DIR="$GITHUB_WORKSPACE/.ci/tsfg-cache-linux"
+          .ci/workspace/tsfg/eng/tsfg-build prefetch --report "$GITHUB_WORKSPACE/.ci/prefetch-linux-report.json"
+          .ci/workspace/tsfg/eng/tsfg-build verify-workspace --workspace "$GITHUB_WORKSPACE/.ci/workspace" --manifest-url "$TSFG_MANIFEST_URL" --manifest-revision "$overlay_revision" --manifest bootstrap/r00.xml --report "$GITHUB_WORKSPACE/.ci/activation-linux-report.json"
 
   agent-activation-windows:
     name: activation / windows
@@ -184,7 +190,14 @@ jobs:
         shell: pwsh
         run: |
           $overlay = Get-Content -Raw .ci/activation-overlay.json | ConvertFrom-Json
-          node .ci/workspace/tsfg/eng/tsfg-build.mjs verify-workspace --workspace "$env:GITHUB_WORKSPACE/.ci/workspace" --manifest-url $env:TSFG_MANIFEST_URL --manifest-revision $overlay.manifestRevision --manifest bootstrap/r00.xml --report "$env:GITHUB_WORKSPACE/.ci/activation-windows-report.json"
+          $env:TSFG_CACHE_DIR = "$env:GITHUB_WORKSPACE/.ci/tsfg-cache-windows"
+          $env:TSFG_BOOTSTRAP_NODE = (Get-Command node.exe -ErrorAction Stop).Source
+          $env:TSFG_BOOTSTRAP_NODE_SHA256 = (Get-FileHash -LiteralPath $env:TSFG_BOOTSTRAP_NODE -Algorithm SHA256).Hash.ToLowerInvariant()
+          $env:TSFG_BOOTSTRAP_GIT = (Get-Command git.exe -ErrorAction Stop).Source
+          $env:TSFG_BOOTSTRAP_GIT_SHA256 = (Get-FileHash -LiteralPath $env:TSFG_BOOTSTRAP_GIT -Algorithm SHA256).Hash.ToLowerInvariant()
+          & .ci\workspace\tsfg\eng\tsfg-build.cmd prefetch --report "$env:GITHUB_WORKSPACE/.ci/prefetch-windows-report.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .ci\workspace\tsfg\eng\tsfg-build.cmd verify-workspace --workspace "$env:GITHUB_WORKSPACE/.ci/workspace" --manifest-url $env:TSFG_MANIFEST_URL --manifest-revision $overlay.manifestRevision --manifest bootstrap/r00.xml --report "$env:GITHUB_WORKSPACE/.ci/activation-windows-report.json"
 
   product-matrix-dispatch:
     name: product matrix dispatch
