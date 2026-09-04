@@ -79,10 +79,12 @@ async function materializationFixture(workspace: string): Promise<void> {
     { "README.md": "# fixture product\n" },
     "https://github.com/xuelongling/tsfg.git",
   );
-  await initializeRepository(
+  const manifestHead = await initializeRepository(
     path.join(workspace, ".repo", "manifests"),
     {
+      "README.md": "<!-- SPDX-License-Identifier: MIT -->\n\n# fixture manifests\n",
       "bootstrap/r00.xml": `<?xml version="1.0" encoding="UTF-8"?>
+<!-- SPDX-License-Identifier: MIT -->
 <manifest>
   <remote name="github-xuelongling" fetch="https://github.com/xuelongling/" />
   <project name="tsfg.git" path="tsfg" remote="github-xuelongling" revision="${"0".repeat(40)}" />
@@ -96,6 +98,12 @@ async function materializationFixture(workspace: string): Promise<void> {
     },
     "https://github.com/xuelongling/manifests.git",
   );
+  const manifestGit = path.join(workspace, ".repo", "manifests.git");
+  await mkdir(manifestGit, { recursive: true });
+  git(manifestGit, "init", "--bare", "--quiet");
+  git(manifestGit, "config", "remote.origin.url", "https://github.com/xuelongling/manifests.git");
+  git(manifestGit, "config", "branch.default.merge", manifestHead);
+  await writeFile(path.join(workspace, ".repo", "project.list"), ".agents\ntsfg\n", "utf8");
 }
 
 const workflow = (actionReference: string) => `# SPDX-License-Identifier: MIT
@@ -345,6 +353,57 @@ test("CI materialization rejects an activation parent redirected outside the wor
   }
 });
 
+test("CI materialization rejects copied and wrong-target activation entries", async () => {
+  for (const kind of ["copied", "wrong-target"] as const) {
+    const workspace = await mkdtemp(path.join(tmpdir(), `tsfg-agent-${kind}-`));
+    try {
+      await materializationFixture(workspace);
+      if (kind === "copied") {
+        await writeFile(path.join(workspace, "AGENTS.md"), "# candidate instructions\n", "utf8");
+      } else {
+        try {
+          await symlink(".agents/codex/config.toml", path.join(workspace, "AGENTS.md"), "file");
+        } catch (error) {
+          if (process.platform === "win32" && (error as NodeJS.ErrnoException).code === "EPERM") {
+            continue;
+          }
+          throw error;
+        }
+      }
+      const result = spawnSync(process.execPath, [materializerPath, "--workspace", workspace], {
+        cwd: repositoryRoot,
+        encoding: "utf8",
+        env: { PATH: process.env.PATH, SystemRoot: process.env.SystemRoot },
+      });
+      assert.equal(result.status, 1);
+      assert.match(result.stderr, /activation-link-(?:conflict|target)/);
+    } finally {
+      await rm(workspace, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+    }
+  }
+});
+
+test("CI materialization has a deterministic missing-link-capability fixture", async () => {
+  const workspace = await mkdtemp(path.join(tmpdir(), "tsfg-agent-capability-"));
+  try {
+    await materializationFixture(workspace);
+    const result = spawnSync(process.execPath, [materializerPath, "--workspace", workspace], {
+      cwd: repositoryRoot,
+      encoding: "utf8",
+      env: {
+        PATH: process.env.PATH,
+        SystemRoot: process.env.SystemRoot,
+        TSFG_TEST_DENY_AGENT_LINK_CAPABILITY: "1",
+      },
+    });
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /activation-link-capability/);
+    assert.equal(await lstat(path.join(workspace, "AGENTS.md")).catch(() => undefined), undefined);
+  } finally {
+    await rm(workspace, { recursive: true, force: true, maxRetries: 20, retryDelay: 100 });
+  }
+});
+
 test("repository PR workflow exposes distinct policy, activation, secret, test, and matrix checks", async () => {
   const contents = await readFile(
     path.join(repositoryRoot, ".github", "workflows", "agent-infrastructure-pr.yml"),
@@ -360,6 +419,9 @@ test("repository PR workflow exposes distinct policy, activation, secret, test, 
   ]) {
     assert.match(contents, new RegExp(`^  ${job}:$`, "m"));
   }
+  assert.match(contents, /repo\.py init/);
+  assert.match(contents, /repo\.py sync --verify/);
+  assert.match(contents, /tsfg-build\.mjs verify-workspace/);
   const result = runCli("workflow-policy", repositoryRoot);
   assert.equal(result.status, 0, result.stderr);
 });

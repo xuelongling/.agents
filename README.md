@@ -17,7 +17,7 @@ The repository requires Node.js 24.20.0 or newer within the Node 24 release line
 
 The individual public checks are `format:check`, `typecheck`, `test`, `secret:scan`, `source:check`, `license:check`, and `workflow:check`. They read only this clone and do not read Codex login state or user configuration.
 
-Pull requests run those gates as separately named checks. Candidate activation is assembled from complete Git identities on fixed Linux and Windows runners. The product matrix request is a machine-readable plan: it is `true` only when the pull-request diff intersects a path explicitly assigned to `.agents.git` by the trusted product Build Input Set. The product matrix itself remains owned by the product repository.
+Pull requests expose separate policy, test, secret, activation, and product-matrix-dispatch failure domains. Candidate activation is applied as a content-addressed overlay to a Repo-materialized workspace on fixed Linux and Windows runners, then accepted only by the product's public `tsfg-build verify-workspace` operation. The product matrix request is a machine-readable plan: it is `true` only when the pull-request diff intersects a path explicitly assigned to `.agents.git` by the trusted product Build Input Set. The product matrix itself remains owned by the product repository.
 
 ## Asset ownership
 

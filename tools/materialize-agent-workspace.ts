@@ -11,6 +11,7 @@ const projectUrls = new Map([
   ["tsfg", "https://github.com/xuelongling/tsfg.git"],
 ]);
 const selectedManifest = "bootstrap/r00.xml";
+const spdxComment = "<!-- SPDX-License-Identifier: MIT -->";
 
 function fail(category: string, message: string): Error {
   return new Error(`${category}: ${message}`);
@@ -84,16 +85,39 @@ function replaceProjectRevision(xml: string, projectName: string, revision: stri
 
 async function createRequiredLink(workspace: string, destination: string, target: string): Promise<void> {
   const destinationPath = path.join(workspace, ...destination.split("/"));
-  if (await lstat(destinationPath).catch(() => undefined)) {
+  const existing = await lstat(destinationPath).catch(() => undefined);
+  if (existing?.isSymbolicLink()) {
+    const source = path.posix.normalize(path.posix.join(path.posix.dirname(destination), target));
+    await verifyRequiredLink(workspace, destination, source);
+    return;
+  }
+  if (existing) {
     throw fail("activation-link-conflict", `${destination} already exists; copy fallback is forbidden`);
   }
   await mkdir(path.dirname(destinationPath), { recursive: true });
+  if (process.env.TSFG_TEST_DENY_AGENT_LINK_CAPABILITY === "1") {
+    throw fail("activation-link-capability", `cannot create ${destination}: fixture denies link capability`);
+  }
   try {
     await symlink(target, destinationPath, "file");
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
     throw fail("activation-link-capability", `cannot create ${destination}: ${detail}`);
   }
+}
+
+function withSpdxComment(contents: string, xml: boolean): string {
+  if (contents.includes("SPDX-License-Identifier: MIT")) {
+    return contents;
+  }
+  if (xml) {
+    const declaration = '<?xml version="1.0" encoding="UTF-8"?>\n';
+    if (!contents.startsWith(declaration)) {
+      throw fail("activation-materialization", `${selectedManifest} has an unsupported XML declaration`);
+    }
+    return `${declaration}${spdxComment}\n${contents.slice(declaration.length)}`;
+  }
+  return `${spdxComment}\n\n${contents}`;
 }
 
 async function verifyRequiredLink(workspace: string, destination: string, source: string): Promise<void> {
@@ -136,6 +160,7 @@ async function main(): Promise<void> {
   const agentsRoot = await requireOrdinaryDirectory(workspace, ".agents");
   const productRoot = await requireOrdinaryDirectory(workspace, "tsfg");
   const manifestsRoot = await requireOrdinaryDirectory(workspace, ".repo/manifests");
+  await requireOrdinaryDirectory(workspace, ".repo/manifests.git");
   await requireSafeActivationParent(workspace, ".codex");
   const heads = new Map([
     [".agents.git", git(agentsRoot, ["rev-parse", "HEAD"])],
@@ -148,6 +173,19 @@ async function main(): Promise<void> {
   }
   await requireCommittedActivationSources(agentsRoot, heads.get(".agents.git")!);
 
+  for (const [destination, source] of [
+    ["AGENTS.md", ".agents/AGENTS.md"],
+    [".codex/config.toml", ".agents/codex/config.toml"],
+    [".codex/hooks.json", ".agents/codex/hooks.json"],
+  ]) {
+    const existing = await lstat(path.join(workspace, ...destination.split("/"))).catch(() => undefined);
+    if (existing?.isSymbolicLink()) {
+      await verifyRequiredLink(workspace, destination, source);
+    } else if (existing) {
+      throw fail("activation-link-conflict", `${destination} already exists; copy fallback is forbidden`);
+    }
+  }
+
   for (const [projectPath, url] of projectUrls) {
     const root = projectPath === ".agents" ? agentsRoot : productRoot;
     git(root, ["config", "remote.github-xuelongling.url", url]);
@@ -155,29 +193,24 @@ async function main(): Promise<void> {
   }
 
   const manifestPath = path.join(manifestsRoot, ...selectedManifest.split("/"));
-  let manifest = await readFile(manifestPath, "utf8");
+  let manifest = withSpdxComment(await readFile(manifestPath, "utf8"), true);
   for (const [projectName, revision] of heads) {
     manifest = replaceProjectRevision(manifest, projectName, revision);
   }
   await writeFile(manifestPath, manifest, "utf8");
+  const manifestReadme = path.join(manifestsRoot, "README.md");
+  await writeFile(manifestReadme, withSpdxComment(await readFile(manifestReadme, "utf8"), false), "utf8");
   git(manifestsRoot, ["config", "user.name", "tsfg agent CI"]);
   git(manifestsRoot, ["config", "user.email", "agent-ci@tsfg.invalid"]);
   git(manifestsRoot, ["config", "commit.gpgsign", "false"]);
   git(manifestsRoot, ["config", "core.fsmonitor", "false"]);
   git(manifestsRoot, ["config", "remote.origin.url", manifestUrl]);
-  git(manifestsRoot, ["add", "--", selectedManifest]);
+  git(manifestsRoot, ["add", "--", "README.md", selectedManifest]);
   git(manifestsRoot, ["commit", "--quiet", "-m", "ci: pin candidate agent workspace"]);
   const manifestRevision = git(manifestsRoot, ["rev-parse", "HEAD"]);
 
   const manifestGit = path.join(workspace, ".repo", "manifests.git");
-  if (await lstat(manifestGit).catch(() => undefined)) {
-    throw fail("activation-materialization", ".repo/manifests.git already exists");
-  }
-  await mkdir(manifestGit, { recursive: true });
-  git(manifestGit, ["init", "--bare", "--quiet"]);
-  git(manifestGit, ["config", "remote.origin.url", manifestUrl]);
   git(manifestGit, ["config", "branch.default.merge", manifestRevision]);
-  await writeFile(path.join(workspace, ".repo", "project.list"), ".agents\ntsfg\n", "utf8");
 
   await createRequiredLink(workspace, ".repo/manifest.xml", "manifests/bootstrap/r00.xml");
   await createRequiredLink(workspace, "AGENTS.md", ".agents/AGENTS.md");

@@ -13,6 +13,8 @@ env:
   PNPM_VERSION: 11.25.0
   TSFG_PRODUCT_REVISION: 53409ce6602fde4d09cd18ea3c56e13bca57c4a0
   TSFG_MANIFEST_REVISION: 743e5a629a19ddcce4c9858f00c4dd87fb5adb5a
+  TSFG_MANIFEST_URL: https://github.com/xuelongling/manifests.git
+  TSFG_REPO_LAUNCHER_SHA256: 1211b57b57e4122a9c546295a59b37d24068f1164d0e87bef096d5323c413e4f
 
 jobs:
   agent-policy:
@@ -75,27 +77,50 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          path: .agents
+          path: .ci/candidate-agents
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          path: tsfg
+          path: .ci/candidate-product
           persist-credentials: false
           ref: ${{ env.TSFG_PRODUCT_REVISION }}
           repository: xuelongling/tsfg
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          path: .repo/manifests
+          path: .ci/manifests
           persist-credentials: false
           ref: ${{ env.TSFG_MANIFEST_REVISION }}
           repository: xuelongling/manifests
       - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
         with:
           node-version: ${{ env.NODE_VERSION }}
-      - name: Materialize and verify candidate Agent Activation Surface
-        run: node .agents/tools/materialize-agent-workspace.ts --workspace "$GITHUB_WORKSPACE"
+      - name: Verify the pinned Repo bootstrap launcher
+        shell: bash
+        run: |
+          mkdir -p .ci/bootstrap .ci/workspace
+          curl --fail --location --silent --show-error https://storage.googleapis.com/git-repo-downloads/repo-2.65 --output .ci/bootstrap/repo.py
+          echo "$TSFG_REPO_LAUNCHER_SHA256  .ci/bootstrap/repo.py" | sha256sum --check --strict
+      - name: Materialize the pinned Repo Workspace
+        shell: bash
+        working-directory: .ci/workspace
+        run: |
+          python3 ../bootstrap/repo.py init -u "$TSFG_MANIFEST_URL" -b "$TSFG_MANIFEST_REVISION" -m bootstrap/r00.xml --repo-rev=v2.65 --worktree
+          python3 ../bootstrap/repo.py sync --verify
+      - name: Apply the candidate overlay
+        shell: bash
+        run: |
+          git -C .ci/workspace/.agents fetch --no-tags "$GITHUB_WORKSPACE/.ci/candidate-agents" HEAD
+          git -C .ci/workspace/.agents checkout --detach FETCH_HEAD
+          git -C .ci/workspace/tsfg fetch --no-tags "$GITHUB_WORKSPACE/.ci/candidate-product" HEAD
+          git -C .ci/workspace/tsfg checkout --detach FETCH_HEAD
+          node .ci/candidate-agents/tools/materialize-agent-workspace.ts --workspace "$GITHUB_WORKSPACE/.ci/workspace" > .ci/activation-overlay.json
+      - name: Verify the materialized Agent Activation Surface
+        shell: bash
+        run: |
+          overlay_revision=$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('.ci/activation-overlay.json','utf8')).manifestRevision)")
+          node .ci/workspace/tsfg/eng/tsfg-build.mjs verify-workspace --workspace "$GITHUB_WORKSPACE/.ci/workspace" --manifest-url "$TSFG_MANIFEST_URL" --manifest-revision "$overlay_revision" --manifest bootstrap/r00.xml --report "$GITHUB_WORKSPACE/.ci/activation-linux-report.json"
 
   agent-activation-windows:
     name: activation / windows
@@ -104,19 +129,19 @@ jobs:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          path: .agents
+          path: .ci/candidate-agents
           persist-credentials: false
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          path: tsfg
+          path: .ci/candidate-product
           persist-credentials: false
           ref: ${{ env.TSFG_PRODUCT_REVISION }}
           repository: xuelongling/tsfg
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
         with:
           fetch-depth: 0
-          path: .repo/manifests
+          path: .ci/manifests
           persist-credentials: false
           ref: ${{ env.TSFG_MANIFEST_REVISION }}
           repository: xuelongling/manifests
@@ -125,10 +150,41 @@ jobs:
           node-version: ${{ env.NODE_VERSION }}
       - name: Activation failure fixtures
         shell: pwsh
-        run: .repo/manifests/tests/run.ps1
-      - name: Materialize and verify candidate Agent Activation Surface
+        run: .ci/manifests/tests/run.ps1
+      - name: Verify the pinned Repo bootstrap launcher
         shell: pwsh
-        run: node .agents/tools/materialize-agent-workspace.ts --workspace $env:GITHUB_WORKSPACE
+        run: |
+          New-Item -ItemType Directory -Path .ci/bootstrap, .ci/workspace -Force | Out-Null
+          Invoke-WebRequest -Uri https://storage.googleapis.com/git-repo-downloads/repo-2.65 -OutFile .ci/bootstrap/repo.py
+          $actual = (Get-FileHash -LiteralPath .ci/bootstrap/repo.py -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:TSFG_REPO_LAUNCHER_SHA256) { throw "repo launcher digest mismatch" }
+          Copy-Item -LiteralPath .ci/manifests/repo.cmd -Destination .ci/bootstrap/repo.cmd
+      - name: Materialize the pinned Repo Workspace
+        shell: pwsh
+        working-directory: .ci/workspace
+        run: |
+          & ..\bootstrap\repo.cmd init -u $env:TSFG_MANIFEST_URL -b $env:TSFG_MANIFEST_REVISION -m bootstrap/r00.xml --repo-rev=v2.65
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ..\bootstrap\repo.cmd sync --verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Apply the candidate overlay
+        shell: pwsh
+        run: |
+          git -C .ci/workspace/.agents fetch --no-tags "$env:GITHUB_WORKSPACE/.ci/candidate-agents" HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C .ci/workspace/.agents checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C .ci/workspace/tsfg fetch --no-tags "$env:GITHUB_WORKSPACE/.ci/candidate-product" HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C .ci/workspace/tsfg checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .ci/candidate-agents/tools/materialize-agent-workspace.ts --workspace "$env:GITHUB_WORKSPACE/.ci/workspace" | Out-File -FilePath .ci/activation-overlay.json -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify the materialized Agent Activation Surface
+        shell: pwsh
+        run: |
+          $overlay = Get-Content -Raw .ci/activation-overlay.json | ConvertFrom-Json
+          node .ci/workspace/tsfg/eng/tsfg-build.mjs verify-workspace --workspace "$env:GITHUB_WORKSPACE/.ci/workspace" --manifest-url $env:TSFG_MANIFEST_URL --manifest-revision $overlay.manifestRevision --manifest bootstrap/r00.xml --report "$env:GITHUB_WORKSPACE/.ci/activation-windows-report.json"
 
   product-matrix-dispatch:
     name: product matrix dispatch
