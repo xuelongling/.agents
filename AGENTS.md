@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # Workspace instructions
 
 This repository provides the agent instructions and support assets for a Repo Workspace containing multiple independent Git repositories. Treat each child repository as a separate change boundary: discover its repository root before editing, run commands from that repository, and never combine unrelated repositories in one commit or worktree.

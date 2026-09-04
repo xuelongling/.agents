@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # Domain docs
 
 This workspace contains multiple independent repositories and therefore uses a multi-context domain layout.

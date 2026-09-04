@@ -6,7 +6,7 @@ import { lstat, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 import { promisify } from "node:util";
 
-export type RepositoryCheck = "format" | "secret-scan" | "source-integrity";
+export type RepositoryCheck = "format" | "license-policy" | "secret-scan" | "source-integrity";
 
 export type Finding = {
   readonly category: string;
@@ -62,6 +62,8 @@ const authoritativeLockNames = new Set([
   "uv.lock",
   "yarn.lock",
 ]);
+const spdxExtensions = new Set([".bat", ".cmd", ".md", ".ps1", ".sh", ".toml", ".ts", ".yaml", ".yml"]);
+const canonicalLicenseDigest = "6a71f67e525cf187d71520769172bc902fac20aa6e74c7f2e8268a8cb44da669";
 
 function relativePortable(root: string, absolutePath: string): string {
   return path.relative(root, absolutePath).replaceAll(path.sep, "/");
@@ -597,11 +599,48 @@ async function checkFormat(root: string, entries: RepositoryEntries): Promise<Fi
   return findings;
 }
 
+async function checkLicensePolicy(root: string, entries: RepositoryEntries): Promise<Finding[]> {
+  const findings: Finding[] = [];
+  const licensePath = path.join(root, "LICENSE");
+  const license = entries.files.includes(licensePath) ? await readFile(licensePath) : Buffer.alloc(0);
+  if (
+    createHash("sha256").update(license).digest("hex") !== canonicalLicenseDigest ||
+    !license.toString("utf8").includes("Copyright (c) 2026 xuelongling\n")
+  ) {
+    findings.push({ category: "license-root", relativePath: "LICENSE" });
+  }
+
+  for (const absolutePath of entries.files) {
+    const relativePath = relativePortable(root, absolutePath);
+    if (relativePath === "LICENSE" || relativePath === "pnpm-lock.yaml") {
+      continue;
+    }
+    const extension = path.extname(relativePath).toLowerCase();
+    if (extension === ".json" || relativePath === ".gitattributes" || relativePath === ".gitignore") {
+      continue;
+    }
+    if (!spdxExtensions.has(extension)) {
+      findings.push({ category: "license-coverage", relativePath });
+      continue;
+    }
+    const content = await readFile(absolutePath, "utf8");
+    if (
+      !/^(?:\/\/|#|@?rem) SPDX-License-Identifier: MIT$/imu.test(content) &&
+      !/^<!-- SPDX-License-Identifier: MIT -->$/mu.test(content)
+    ) {
+      findings.push({ category: "license-spdx", relativePath });
+    }
+  }
+  return findings;
+}
+
 export async function checkRepository(command: RepositoryCheck, root: string): Promise<readonly Finding[]> {
   const entries = await repositoryEntries(root);
   let findings: Finding[];
   if (command === "format") {
     findings = await checkFormat(root, entries);
+  } else if (command === "license-policy") {
+    findings = await checkLicensePolicy(root, entries);
   } else if (command === "secret-scan") {
     findings = await scanSecrets(root, entries);
   } else {

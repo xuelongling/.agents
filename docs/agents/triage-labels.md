@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # Triage labels
 
 Local Markdown tickets use these canonical Matt Pocock triage roles as their `Status:` values.

@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # Issue tracker: local Markdown
 
 Issues and specs for every repository in this workspace live under the workspace root at `.scratch/`. The workspace root is not a Git repository, so this state remains local without changing any child repository's `.gitignore`.
