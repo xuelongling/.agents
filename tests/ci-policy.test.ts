@@ -437,6 +437,12 @@ test("repository PR workflow exposes distinct policy, activation, secret, test, 
   assert.match(contents, /eng\/tsfg-build verify-workspace/);
   assert.match(contents, /eng\\tsfg-build\.cmd verify-workspace/);
   assert.doesNotMatch(contents, /tsfg-build\.mjs verify-workspace/);
+  const linuxActivation = contents
+    .split(/^  agent-activation-windows:$/m)[0]
+    .split(/^  agent-activation-linux:$/m)[1];
+  assert.ok(linuxActivation);
+  assert.match(linuxActivation, /export TSFG_BOOTSTRAP_GIT="\$bootstrap_git"/);
+  assert.match(linuxActivation, /export TSFG_BOOTSTRAP_GIT_SHA256="\$bootstrap_git_sha256"/);
   const result = runCli("workflow-policy", repositoryRoot);
   assert.equal(result.status, 0, result.stderr);
 });

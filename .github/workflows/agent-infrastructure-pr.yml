@@ -11,7 +11,7 @@ permissions:
 env:
   NODE_VERSION: 24.20.0
   PNPM_VERSION: 11.25.0
-  TSFG_PRODUCT_REVISION: 5df341aaed61a012c566a35a78d4e4288c8b4b91
+  TSFG_PRODUCT_REVISION: 08384dc2bb0387771ad5c5cf1ebe74583e15fd10
   TSFG_MANIFEST_REVISION: e41365a80a3f1506d9c8dbcf2f01cdc53032c170
   TSFG_MANIFEST_URL: https://github.com/xuelongling/manifests.git
   TSFG_REPO_LAUNCHER_SHA256: 1211b57b57e4122a9c546295a59b37d24068f1164d0e87bef096d5323c413e4f
@@ -122,8 +122,12 @@ jobs:
           overlay_revision=$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('.ci/activation-overlay.json','utf8')).manifestRevision)")
           bootstrap_node=$(command -v node)
           bootstrap_node_sha256=$(sha256sum "$bootstrap_node" | cut -d ' ' -f 1)
+          bootstrap_git=$(command -v git)
+          bootstrap_git_sha256=$(sha256sum "$bootstrap_git" | cut -d ' ' -f 1)
           export TSFG_BOOTSTRAP_NODE="$bootstrap_node"
           export TSFG_BOOTSTRAP_NODE_SHA256="$bootstrap_node_sha256"
+          export TSFG_BOOTSTRAP_GIT="$bootstrap_git"
+          export TSFG_BOOTSTRAP_GIT_SHA256="$bootstrap_git_sha256"
           export TSFG_CACHE_DIR="$GITHUB_WORKSPACE/.ci/tsfg-cache-linux"
           .ci/workspace/tsfg/eng/tsfg-build prefetch --report "$GITHUB_WORKSPACE/.ci/prefetch-linux-report.json"
           .ci/workspace/tsfg/eng/tsfg-build verify-workspace --workspace "$GITHUB_WORKSPACE/.ci/workspace" --manifest-url "$TSFG_MANIFEST_URL" --manifest-revision "$overlay_revision" --manifest bootstrap/r00.xml --report "$GITHUB_WORKSPACE/.ci/activation-linux-report.json"
