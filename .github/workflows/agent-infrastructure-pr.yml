@@ -11,7 +11,7 @@ permissions:
 env:
   NODE_VERSION: 24.20.0
   PNPM_VERSION: 11.25.0
-  TSFG_PRODUCT_REVISION: c0f147f0e822daf9adf7bea6b35f9cda8cf3cac5
+  TSFG_PRODUCT_REVISION: 61ea2365cffd056b16371b389261bf97b983cf2a
   TSFG_MANIFEST_REVISION: e41365a80a3f1506d9c8dbcf2f01cdc53032c170
   TSFG_MANIFEST_URL: https://github.com/xuelongling/manifests.git
   TSFG_REPO_LAUNCHER_SHA256: 1211b57b57e4122a9c546295a59b37d24068f1164d0e87bef096d5323c413e4f
@@ -202,6 +202,13 @@ jobs:
           & .ci\workspace\tsfg\eng\tsfg-build.cmd prefetch --report "$env:GITHUB_WORKSPACE/.ci/prefetch-windows-report.json"
           if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
           & .ci\workspace\tsfg\eng\tsfg-build.cmd verify-workspace --workspace "$env:GITHUB_WORKSPACE/.ci/workspace" --manifest-url $env:TSFG_MANIFEST_URL --manifest-revision $overlay.manifestRevision --manifest bootstrap/r00.xml --report "$env:GITHUB_WORKSPACE/.ci/activation-windows-report.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          if-no-files-found: warn
+          name: windows-sandbox-control-diagnostic-${{ github.event.pull_request.head.sha }}
+          path: .ci/tsfg-cache-windows/windows-sandbox-control-failure
+          retention-days: 1
 
   product-matrix-dispatch:
     name: product matrix dispatch
