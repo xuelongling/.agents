@@ -150,11 +150,15 @@ function credentialPattern(): RegExp {
     ["refresh", "token"],
     ["id", "token"],
     ["api", "key"],
+    ["oauth", "(?:session|token)"],
     ["token"],
+    ["password"],
+    ["passwd"],
+    ["session", "cookie"],
   ].map((parts) => parts.join("[_ -]?"));
   return new RegExp(
-    `(?:^|[^A-Za-z0-9_])["']?(?:${names.join("|")}|authorization)["']?\\s*[:=]\\s*["']?(?!<|\\$\\{|%)[^\\s"']{8,}`,
-    "i",
+    `(?:^|[,{;\\r\\n])\\s*["']?(?:[A-Za-z0-9]+[_. -]+)*(?:${names.join("|")}|authorization)["']?\\s*[:=]\\s*(?:"(?!<|\\$\\{|%)[^"\\r\\n]+"|'(?!<|\\$\\{|%)[^'\\r\\n]+'|(?!["'<$%])[^\\s#;,]+)`,
+    "im",
   );
 }
 
