@@ -65,7 +65,7 @@ async function initializeRepository(
 }
 
 async function materializationFixture(workspace: string): Promise<void> {
-  await initializeRepository(
+  const agentRevision = await initializeRepository(
     path.join(workspace, ".agents"),
     {
       "AGENTS.md": "# candidate instructions\n",
@@ -88,7 +88,7 @@ async function materializationFixture(workspace: string): Promise<void> {
 <manifest>
   <remote name="github-xuelongling" fetch="https://github.com/xuelongling/" />
   <project name="tsfg.git" path="tsfg" remote="github-xuelongling" revision="${"0".repeat(40)}" />
-  <project name=".agents.git" path=".agents" remote="github-xuelongling" revision="${"0".repeat(40)}">
+  <project name=".agents.git" path=".agents" remote="github-xuelongling" revision="${agentRevision}">
     <linkfile src="AGENTS.md" dest="AGENTS.md" />
     <linkfile src="codex/config.toml" dest=".codex/config.toml" />
     <linkfile src="codex/hooks.json" dest=".codex/hooks.json" />
@@ -103,6 +103,15 @@ async function materializationFixture(workspace: string): Promise<void> {
   git(manifestGit, "init", "--bare", "--quiet");
   git(manifestGit, "config", "remote.origin.url", "https://github.com/xuelongling/manifests.git");
   git(manifestGit, "config", "branch.default.merge", manifestHead);
+  await writeFile(
+    path.join(workspace, ".repo", "manifest.xml"),
+    `<?xml version="1.0" encoding="UTF-8"?>
+<manifest>
+  <include name="bootstrap/r00.xml" />
+</manifest>
+`,
+    "utf8",
+  );
   await writeFile(path.join(workspace, ".repo", "project.list"), ".agents\ntsfg\n", "utf8");
 }
 
@@ -298,6 +307,10 @@ test("CI materialization creates exact links or fails closed when link capabilit
     const identity = JSON.parse(result.stdout);
     assert.match(identity.manifestRevision, /^[0-9a-f]{40}$/);
     assert.equal(identity.selectedManifest, "bootstrap/r00.xml");
+    const manifestControl = await lstat(path.join(workspace, ".repo", "manifest.xml"));
+    assert.equal(manifestControl.isFile(), true);
+    assert.equal(manifestControl.isSymbolicLink(), false);
+    assert.match(await readFile(path.join(workspace, ".repo", "manifest.xml"), "utf8"), /<include name="bootstrap\/r00\.xml" \/>/);
 
     for (const [destination, source] of [
       ["AGENTS.md", ".agents/AGENTS.md"],

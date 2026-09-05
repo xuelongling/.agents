@@ -68,19 +68,38 @@ async function requireSafeActivationParent(workspace: string, relativePath: stri
 
 function replaceProjectRevision(xml: string, projectName: string, revision: string): string {
   const escapedName = projectName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-  const projectPattern = new RegExp(`<project\\b([^>]*\\bname="${escapedName}"[^>]*)>`);
-  let replacements = 0;
+  const projectPattern = new RegExp(`<project\\b([^>]*\\bname="${escapedName}"[^>]*)>`, "g");
+  let matches = 0;
   const updated = xml.replace(projectPattern, (tag) => {
-    const next = tag.replace(/revision="[^"]+"/, `revision="${revision}"`);
-    if (next !== tag) {
-      replacements += 1;
+    matches += 1;
+    if ((tag.match(/\brevision="[^"]+"/g) ?? []).length !== 1) {
+      throw fail("activation-materialization", `cannot pin ${projectName} in ${selectedManifest}`);
     }
-    return next;
+    return tag.replace(/\brevision="[^"]+"/, `revision="${revision}"`);
   });
-  if (replacements !== 1) {
+  if (matches !== 1) {
     throw fail("activation-materialization", `cannot pin ${projectName} in ${selectedManifest}`);
   }
   return updated;
+}
+
+async function requireSelectedManifestControlFile(workspace: string): Promise<void> {
+  const relativePath = ".repo/manifest.xml";
+  const controlPath = path.join(workspace, ...relativePath.split("/"));
+  const metadata = await lstat(controlPath).catch(() => undefined);
+  if (!metadata?.isFile() || metadata.isSymbolicLink() || metadata.nlink !== 1) {
+    throw fail("activation-manifest-selection", `${relativePath} must be an ordinary Repo control file`);
+  }
+  const normalized = (await readFile(controlPath, "utf8"))
+    .replace(/^\uFEFF/, "")
+    .replace(/<\?xml[^?]*\?>/g, "")
+    .replace(/<!--[\s\S]*?-->/g, "")
+    .trim();
+  const include = selectedManifest.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const expected = new RegExp(`^<manifest>\\s*<include\\s+name="${include}"\\s*/>\\s*</manifest>$`);
+  if (!expected.test(normalized)) {
+    throw fail("activation-manifest-selection", `${relativePath} does not select only ${selectedManifest}`);
+  }
 }
 
 async function createRequiredLink(workspace: string, destination: string, target: string): Promise<void> {
@@ -161,6 +180,7 @@ async function main(): Promise<void> {
   const productRoot = await requireOrdinaryDirectory(workspace, "tsfg");
   const manifestsRoot = await requireOrdinaryDirectory(workspace, ".repo/manifests");
   await requireOrdinaryDirectory(workspace, ".repo/manifests.git");
+  await requireSelectedManifestControlFile(workspace);
   await requireSafeActivationParent(workspace, ".codex");
   const heads = new Map([
     [".agents.git", git(agentsRoot, ["rev-parse", "HEAD"])],
@@ -212,7 +232,6 @@ async function main(): Promise<void> {
   const manifestGit = path.join(workspace, ".repo", "manifests.git");
   git(manifestGit, ["config", "branch.default.merge", manifestRevision]);
 
-  await createRequiredLink(workspace, ".repo/manifest.xml", "manifests/bootstrap/r00.xml");
   await createRequiredLink(workspace, "AGENTS.md", ".agents/AGENTS.md");
   await createRequiredLink(workspace, ".codex/config.toml", "../.agents/codex/config.toml");
   await createRequiredLink(workspace, ".codex/hooks.json", "../.agents/codex/hooks.json");
