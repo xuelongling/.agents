@@ -1,0 +1,242 @@
+# SPDX-License-Identifier: MIT
+
+name: Agent Infrastructure PR
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  NODE_VERSION: 24.20.0
+  PNPM_VERSION: 11.25.0
+  TSFG_PRODUCT_REVISION: 0d383ec9b92a6039d3ed570b084df9eeab42e036
+  TSFG_MANIFEST_REVISION: e41365a80a3f1506d9c8dbcf2f01cdc53032c170
+  TSFG_MANIFEST_URL: https://github.com/xuelongling/manifests.git
+  TSFG_REPO_LAUNCHER_SHA256: 1211b57b57e4122a9c546295a59b37d24068f1164d0e87bef096d5323c413e4f
+
+jobs:
+  agent-policy:
+    name: agent policy
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install locked dependencies
+        run: corepack pnpm@${{ env.PNPM_VERSION }} install --frozen-lockfile
+      - name: Format policy
+        run: corepack pnpm@${{ env.PNPM_VERSION }} format:check
+      - name: Maintainable source and provenance policy
+        run: corepack pnpm@${{ env.PNPM_VERSION }} source:check
+      - name: License policy
+        run: corepack pnpm@${{ env.PNPM_VERSION }} license:check
+      - name: Workflow security policy
+        run: corepack pnpm@${{ env.PNPM_VERSION }} workflow:check
+
+  agent-test:
+    name: repository tests
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Install locked dependencies
+        run: corepack pnpm@${{ env.PNPM_VERSION }} install --frozen-lockfile
+      - name: Typecheck
+        run: corepack pnpm@${{ env.PNPM_VERSION }} typecheck
+      - name: Repository tests
+        run: corepack pnpm@${{ env.PNPM_VERSION }} test
+
+  agent-secret:
+    name: secret scan
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Candidate secret scan
+        run: node tools/agent-infra.ts secret-scan
+
+  agent-activation-linux:
+    name: activation / linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          path: .ci/candidate-agents
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          path: .ci/candidate-product
+          persist-credentials: false
+          ref: ${{ env.TSFG_PRODUCT_REVISION }}
+          repository: xuelongling/tsfg
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          path: .ci/manifests
+          persist-credentials: false
+          ref: ${{ env.TSFG_MANIFEST_REVISION }}
+          repository: xuelongling/manifests
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Verify the pinned Repo bootstrap launcher
+        shell: bash
+        run: |
+          mkdir -p .ci/bootstrap .ci/workspace
+          curl --fail --location --silent --show-error https://storage.googleapis.com/git-repo-downloads/repo-2.65 --output .ci/bootstrap/repo.py
+          echo "$TSFG_REPO_LAUNCHER_SHA256  .ci/bootstrap/repo.py" | sha256sum --check --strict
+      - name: Materialize the pinned Repo Workspace
+        shell: bash
+        working-directory: .ci/workspace
+        run: |
+          python3 ../bootstrap/repo.py init -u "$TSFG_MANIFEST_URL" -b "$TSFG_MANIFEST_REVISION" -m bootstrap/r00.xml --repo-rev=v2.65 --worktree
+          python3 ../bootstrap/repo.py sync --verify
+      - name: Apply the candidate overlay
+        shell: bash
+        run: |
+          git -C .ci/workspace/.agents fetch --no-tags "$GITHUB_WORKSPACE/.ci/candidate-agents" HEAD
+          git -C .ci/workspace/.agents checkout --detach FETCH_HEAD
+          git -C .ci/workspace/tsfg fetch --no-tags "$GITHUB_WORKSPACE/.ci/candidate-product" HEAD
+          git -C .ci/workspace/tsfg checkout --detach FETCH_HEAD
+          node .ci/candidate-agents/tools/materialize-agent-workspace.ts --workspace "$GITHUB_WORKSPACE/.ci/workspace" > .ci/activation-overlay.json
+      - name: Verify the materialized Agent Activation Surface
+        shell: bash
+        run: |
+          overlay_revision=$(node -e "const fs=require('node:fs'); process.stdout.write(JSON.parse(fs.readFileSync('.ci/activation-overlay.json','utf8')).manifestRevision)")
+          bootstrap_node=$(command -v node)
+          bootstrap_node_sha256=$(sha256sum "$bootstrap_node" | cut -d ' ' -f 1)
+          bootstrap_git=$(command -v git)
+          bootstrap_git_sha256=$(sha256sum "$bootstrap_git" | cut -d ' ' -f 1)
+          export TSFG_BOOTSTRAP_NODE="$bootstrap_node"
+          export TSFG_BOOTSTRAP_NODE_SHA256="$bootstrap_node_sha256"
+          export TSFG_BOOTSTRAP_GIT="$bootstrap_git"
+          export TSFG_BOOTSTRAP_GIT_SHA256="$bootstrap_git_sha256"
+          export TSFG_CACHE_DIR="$GITHUB_WORKSPACE/.ci/tsfg-cache-linux"
+          .ci/workspace/tsfg/eng/tsfg-build prefetch --report "$GITHUB_WORKSPACE/.ci/prefetch-linux-report.json"
+          .ci/workspace/tsfg/eng/tsfg-build verify-workspace --workspace "$GITHUB_WORKSPACE/.ci/workspace" --manifest-url "$TSFG_MANIFEST_URL" --manifest-revision "$overlay_revision" --manifest bootstrap/r00.xml --report "$GITHUB_WORKSPACE/.ci/activation-linux-report.json"
+
+  agent-activation-windows:
+    name: activation / windows
+    runs-on: windows-2025
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          path: .ci/candidate-agents
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          path: .ci/candidate-product
+          persist-credentials: false
+          ref: ${{ env.TSFG_PRODUCT_REVISION }}
+          repository: xuelongling/tsfg
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          path: .ci/manifests
+          persist-credentials: false
+          ref: ${{ env.TSFG_MANIFEST_REVISION }}
+          repository: xuelongling/manifests
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Activation failure fixtures
+        shell: pwsh
+        run: .ci/manifests/tests/run.ps1
+      - name: Verify the pinned Repo bootstrap launcher
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Path .ci/bootstrap, .ci/workspace -Force | Out-Null
+          Invoke-WebRequest -Uri https://storage.googleapis.com/git-repo-downloads/repo-2.65 -OutFile .ci/bootstrap/repo.py
+          $actual = (Get-FileHash -LiteralPath .ci/bootstrap/repo.py -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:TSFG_REPO_LAUNCHER_SHA256) { throw "repo launcher digest mismatch" }
+          Copy-Item -LiteralPath .ci/manifests/repo.cmd -Destination .ci/bootstrap/repo.cmd
+      - name: Materialize the pinned Repo Workspace
+        shell: pwsh
+        working-directory: .ci/workspace
+        run: |
+          & ..\bootstrap\repo.cmd init -u $env:TSFG_MANIFEST_URL -b $env:TSFG_MANIFEST_REVISION -m bootstrap/r00.xml --repo-rev=v2.65
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & ..\bootstrap\repo.cmd sync --verify
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Apply the candidate overlay
+        shell: pwsh
+        run: |
+          git -C .ci/workspace/.agents fetch --no-tags "$env:GITHUB_WORKSPACE/.ci/candidate-agents" HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C .ci/workspace/.agents checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C .ci/workspace/tsfg fetch --no-tags "$env:GITHUB_WORKSPACE/.ci/candidate-product" HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          git -C .ci/workspace/tsfg checkout --detach FETCH_HEAD
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node .ci/candidate-agents/tools/materialize-agent-workspace.ts --workspace "$env:GITHUB_WORKSPACE/.ci/workspace" | Out-File -FilePath .ci/activation-overlay.json -Encoding utf8NoBOM
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - name: Verify the materialized Agent Activation Surface
+        shell: pwsh
+        run: |
+          $overlay = Get-Content -Raw .ci/activation-overlay.json | ConvertFrom-Json
+          $env:TSFG_CACHE_DIR = "$env:GITHUB_WORKSPACE/.ci/tsfg-cache-windows"
+          $env:TSFG_BOOTSTRAP_NODE = (Get-Command node.exe -ErrorAction Stop).Source
+          $env:TSFG_BOOTSTRAP_NODE_SHA256 = (Get-FileHash -LiteralPath $env:TSFG_BOOTSTRAP_NODE -Algorithm SHA256).Hash.ToLowerInvariant()
+          $env:TSFG_BOOTSTRAP_GIT = (Get-Command git.exe -ErrorAction Stop).Source
+          $env:TSFG_BOOTSTRAP_GIT_SHA256 = (Get-FileHash -LiteralPath $env:TSFG_BOOTSTRAP_GIT -Algorithm SHA256).Hash.ToLowerInvariant()
+          & .ci\workspace\tsfg\eng\tsfg-build.cmd prefetch --report "$env:GITHUB_WORKSPACE/.ci/prefetch-windows-report.json"
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & .ci\workspace\tsfg\eng\tsfg-build.cmd verify-workspace --workspace "$env:GITHUB_WORKSPACE/.ci/workspace" --manifest-url $env:TSFG_MANIFEST_URL --manifest-revision $overlay.manifestRevision --manifest bootstrap/r00.xml --report "$env:GITHUB_WORKSPACE/.ci/activation-windows-report.json"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        if: failure()
+        with:
+          if-no-files-found: warn
+          name: windows-sandbox-control-diagnostic-${{ github.event.pull_request.head.sha }}
+          path: .ci/tsfg-cache-windows/windows-sandbox-control-failure
+          retention-days: 1
+
+  product-matrix-dispatch:
+    name: product matrix dispatch
+    runs-on: ubuntu-24.04
+    outputs:
+      required: ${{ steps.plan.outputs.required }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          path: .ci/tsfg
+          persist-credentials: false
+          ref: ${{ env.TSFG_PRODUCT_REVISION }}
+          repository: xuelongling/tsfg
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+      - name: Classify the product matrix request
+        id: plan
+        shell: pwsh
+        run: |
+          $planJson = node tools/agent-infra.ts product-matrix-request --root . --base '${{ github.event.pull_request.base.sha }}' --head '${{ github.event.pull_request.head.sha }}' --build-inputs .ci/tsfg/eng/build-inputs.json
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $plan = $planJson | ConvertFrom-Json
+          $required = $plan.productMatrix.required.ToString().ToLowerInvariant()
+          "required=$required" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "Product matrix required: $required" | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append
+          $planJson | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Encoding utf8 -Append

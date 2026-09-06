@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # Agent Infrastructure Context
 
 The Agent Infrastructure Repository owns maintainable agent policy and extension assets independently from their workspace activation.

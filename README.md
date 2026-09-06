@@ -1,3 +1,5 @@
+<!-- SPDX-License-Identifier: MIT -->
+
 # tsfg Agent Infrastructure
 
 This repository is the source of truth for tsfg Repo Workspace agent instructions and extensions. Workspace activation is intentionally separate and is assembled by the Integration Manifest.
@@ -13,7 +15,9 @@ corepack pnpm@11.25.0 verify
 
 The repository requires Node.js 24.20.0 or newer within the Node 24 release line and pnpm 11.25.0.
 
-The individual public checks are `format:check`, `typecheck`, `test`, `secret:scan`, and `source:check`. They read only this clone and do not read Codex login state or user configuration.
+The individual public checks are `format:check`, `typecheck`, `test`, `secret:scan`, `source:check`, `license:check`, and `workflow:check`. They read only this clone and do not read Codex login state or user configuration.
+
+Pull requests expose separate policy, test, secret, activation, and product-matrix-dispatch failure domains. Candidate activation is applied as a content-addressed overlay to a Repo-materialized workspace on fixed Linux and Windows runners, then accepted only by the product's public `tsfg-build verify-workspace` operation. The product matrix request is a machine-readable plan: it is `true` only when the pull-request diff intersects a path explicitly assigned to `.agents.git` by the trusted product Build Input Set. The product matrix itself remains owned by the product repository.
 
 ## Asset ownership
 

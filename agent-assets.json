@@ -27,10 +27,14 @@
     "docs/agents/triage-labels.md"
   ],
   "tests": [
-    "tests/agent-infra.test.ts"
+    "tests/agent-infra.test.ts",
+    "tests/ci-policy.test.ts"
   ],
   "tooling": [
+    ".github/workflows/agent-infrastructure-pr.yml",
     "tools/agent-infra.ts",
+    "tools/ci-policy.ts",
+    "tools/materialize-agent-workspace.ts",
     "tools/repository-policy.ts",
     "package.json",
     "pnpm-lock.yaml",

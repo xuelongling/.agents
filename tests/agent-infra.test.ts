@@ -117,9 +117,18 @@ test("secret scan rejects credential values", async () => {
 });
 
 test("secret scan rejects GitHub tokens without an assignment key", async () => {
-  const oauthToken = ["gho", "A".repeat(36)].join("_");
-  const fineGrainedToken = ["github", "pat", "B".repeat(40)].join("_");
-  await withFixture({ "notes/tokens.md": `${oauthToken}\n${fineGrainedToken}\n` }, (root) => {
+  const oauthValue = ["gho", "A".repeat(36)].join("_");
+  const fineGrainedValue = ["github", "pat", "B".repeat(40)].join("_");
+  await withFixture({ "notes/tokens.md": `${oauthValue}\n${fineGrainedValue}\n` }, (root) => {
+    const result = runCli("secret-scan", root);
+    assert.equal(result.status, 1);
+    assert.match(result.stderr, /credential value/i);
+  });
+});
+
+test("secret scan rejects source-shaped credential assignments", async () => {
+  const source = 'const oauthToken = ["gho", "A".repeat(36)].join("_");\n';
+  await withFixture({ "tests/unsafe.ts": source }, (root) => {
     const result = runCli("secret-scan", root);
     assert.equal(result.status, 1);
     assert.match(result.stderr, /credential value/i);
